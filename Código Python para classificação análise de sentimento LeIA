@@ -1,0 +1,129 @@
+import pandas as pd
+import os
+import re
+import tkinter as tk
+from tkinter import filedialog
+from datetime import datetime
+import nltk
+from LeIA import SentimentIntensityAnalyzer 
+
+
+# Função para carregar o mapeamento de emojis a partir do arquivo TXT
+def carregar_mapeamento(arquivo):
+    mapeamento = {}
+    try:
+        with open(arquivo, encoding="utf-8") as f:
+            for linha in f:
+                linha = linha.strip()
+                if not linha:
+                    continue
+                # Considera delimitadores: tab, ":" ou "|"
+                if "\t" in linha:
+                    partes = linha.split("\t", 1)
+                elif ":" in linha:
+                    partes = linha.split(":", 1)
+                elif "|" in linha:
+                    partes = linha.split("|", 1)
+                else:
+                    continue
+                emoji_char = partes[0].strip()
+                frase = partes[1].strip()
+                mapeamento[emoji_char] = frase
+    except Exception as e:
+        print(f"Erro ao carregar o mapeamento de emojis: {e}")
+    return mapeamento
+
+
+# Função para substituir os emojis por suas descrições na mensagem
+def substituir_emojis(texto, mapeamento):
+    for chave, valor in mapeamento.items():
+        # Substitui cada ocorrência do emoji pela descrição seguida de ". "
+        texto = re.sub(re.escape(chave), f"{valor}. ", texto)
+    # Remove espaços em branco do início e do fim
+    texto = texto.strip()
+    # Se o texto não terminar com pontuação, adiciona um ponto final
+    if texto and texto[-1] not in ".!?":
+        texto = texto + "."
+    return texto
+
+
+# Caminho do arquivo de mapeamento de emojis (arquivo "Emoji.txt")
+emoji_mapping_path = r"C:"
+emoji_mapping = carregar_mapeamento(emoji_mapping_path)
+
+# Criar analisador de sentimentos do LeIA
+analisador = SentimentIntensityAnalyzer()
+
+# Abrir janela para selecionar a pasta
+root = tk.Tk()
+root.withdraw()
+folder_path = filedialog.askdirectory(title="Selecione a pasta com os arquivos Excel")
+
+if not folder_path:
+    print("Nenhuma pasta selecionada. O script será encerrado.")
+    exit()
+
+# Listar todos os arquivos .xlsx na pasta selecionada
+files = [f for f in os.listdir(folder_path) if f.endswith(".xlsx")]
+
+if not files:
+    print("Nenhum arquivo Excel encontrado na pasta selecionada.")
+    exit()
+
+# Lista para armazenar os resultados
+resultados = []
+medias_por_arquivo = []
+
+# Processar cada arquivo Excel
+for file in files:
+    file_path = os.path.join(folder_path, file)
+    try:
+        xls = pd.ExcelFile(file_path)
+        df = xls.parse(xls.sheet_names[0])
+
+        if df.shape[1] < 8:
+            print(f"Aviso: {file} não tem colunas suficientes. Pulando arquivo.")
+            continue
+
+        # Obter o nome do arquivo a partir da célula B2.
+        # Se o arquivo possuir cabeçalho, B2 corresponderá a df.iloc[0, 1].
+        nome_arquivo = df.iloc[0, 1]
+
+        coluna_comentarios = df.iloc[:, 7]
+        sentimento_total = 0
+        num_comentarios = 0
+
+        for comentario in coluna_comentarios.dropna():
+            if isinstance(comentario, str):
+                # Se o comentário contiver "Comment", desconsidera a análise
+                if "Comment" in comentario:
+                    continue
+                # Substituir os emojis por descrições
+                comentario_substituido = substituir_emojis(comentario, emoji_mapping)
+                # Calcular o sentimento somente a partir do comentário modificado
+                sentimento_substituido = analisador.polarity_scores(comentario_substituido)["compound"]
+                resultados.append([nome_arquivo, comentario, comentario_substituido, sentimento_substituido])
+                sentimento_total += sentimento_substituido
+                num_comentarios += 1
+
+        legitimidade = sentimento_total / num_comentarios if num_comentarios > 0 else 0
+        medias_por_arquivo.append([nome_arquivo, legitimidade])
+        print(f"Arquivo processado: {file} -> Legitimidade Média: {legitimidade:.4f}")
+
+    except Exception as e:
+        print(f"Erro ao processar {file}: {e}")
+
+# Criar DataFrames para os resultados
+df_resultado = pd.DataFrame(resultados, columns=["Arquivo", "Comentário Original", "Comentário com Emojis Substituídos",
+                                                 "Score com Emojis Substituídos"])
+df_medias = pd.DataFrame(medias_por_arquivo, columns=["Arquivo", "Legitimidade Média"])
+
+# Salvar resultados em Excel
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_path = os.path.join(folder_path, f"sentimentos_geral_{timestamp}.xlsx")
+
+with pd.ExcelWriter(output_path) as writer:
+    df_resultado.to_excel(writer, sheet_name="Todos os Dados", index=False)
+    df_medias.to_excel(writer, sheet_name="Médias por Arquivo", index=False)
+
+print(f"Processamento concluído! Resultados salvos em: {output_path}")
